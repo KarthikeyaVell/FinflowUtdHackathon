@@ -1,11 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Progress } from './ui/progress';
-import { Upload, FileText, X } from 'lucide-react';
+import { Upload, FileText, X, Loader2 } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { loansAPI, documentsAPI } from '../utils/api';
+import { toast } from 'sonner@2.0.3';
 
 interface ActiveLoan {
   id: string;
@@ -20,66 +22,97 @@ interface UploadedFile {
   id: string;
   name: string;
   size: number;
-  uploadDate: Date;
+  uploadDate: string | Date;
 }
-
-const activeLoans: ActiveLoan[] = [
-  {
-    id: '1',
-    type: 'Personal Loan',
-    amount: 10000,
-    balance: 6500,
-    interestRate: 5.5,
-    dueDate: '2026-03-15',
-  },
-  {
-    id: '2',
-    type: 'Auto Loan',
-    amount: 25000,
-    balance: 18750,
-    interestRate: 3.9,
-    dueDate: '2027-06-20',
-  },
-];
 
 export function LoansPage() {
   const [loanAmount, setLoanAmount] = useState('');
   const [loanDuration, setLoanDuration] = useState('');
   const [loanPurpose, setLoanPurpose] = useState('');
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([
-    {
-      id: '1',
-      name: 'Income_Statement_2024.pdf',
-      size: 245000,
-      uploadDate: new Date('2025-11-05'),
-    },
-    {
-      id: '2',
-      name: 'Tax_Return_2024.pdf',
-      size: 1024000,
-      uploadDate: new Date('2025-11-06'),
-    },
-  ]);
+  const [activeLoans, setActiveLoans] = useState<ActiveLoan[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isFetching, setIsFetching] = useState(true);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      const newFiles: UploadedFile[] = Array.from(files).map((file, index) => ({
-        id: Date.now().toString() + index,
-        name: file.name,
-        size: file.size,
-        uploadDate: new Date(),
-      }));
-      setUploadedFiles([...uploadedFiles, ...newFiles]);
+  // Load loans and documents on mount
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    try {
+      const [loansResponse, documentsResponse] = await Promise.all([
+        loansAPI.getAll(),
+        documentsAPI.getAll(),
+      ]);
+      setActiveLoans(loansResponse.loans || []);
+      setUploadedFiles(documentsResponse.documents || []);
+    } catch (error) {
+      console.error('Failed to load data:', error);
+      toast.error('Failed to load loan data. Please try again.');
+    } finally {
+      setIsFetching(false);
     }
   };
 
-  const handleRemoveFile = (id: string) => {
-    setUploadedFiles(uploadedFiles.filter((file) => file.id !== id));
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      setIsLoading(true);
+      try {
+        for (const file of Array.from(files)) {
+          const response = await documentsAPI.upload({
+            name: file.name,
+            size: file.size,
+          });
+          setUploadedFiles((prev) => [...prev, response.document]);
+        }
+        toast.success('Documents uploaded successfully');
+      } catch (error) {
+        console.error('Failed to upload documents:', error);
+        toast.error('Failed to upload documents. Please try again.');
+      } finally {
+        setIsLoading(false);
+      }
+    }
   };
 
-  const handleStartApplication = () => {
-    alert('Loan application started! Amount: $' + loanAmount + ', Duration: ' + loanDuration + ' months, Purpose: ' + loanPurpose);
+  const handleRemoveFile = async (id: string) => {
+    try {
+      await documentsAPI.delete(id);
+      setUploadedFiles(uploadedFiles.filter((file) => file.id !== id));
+      toast.success('Document removed');
+    } catch (error) {
+      console.error('Failed to remove document:', error);
+      toast.error('Failed to remove document. Please try again.');
+    }
+  };
+
+  const handleStartApplication = async () => {
+    if (!loanAmount || !loanDuration || !loanPurpose) {
+      toast.error('Please fill in all fields');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const response = await loansAPI.create({
+        amount: loanAmount,
+        duration: loanDuration,
+        purpose: loanPurpose,
+      });
+      
+      setActiveLoans([...activeLoans, response.loan]);
+      setLoanAmount('');
+      setLoanDuration('');
+      setLoanPurpose('');
+      toast.success('Loan application created successfully!');
+    } catch (error) {
+      console.error('Failed to create loan:', error);
+      toast.error('Failed to create loan application. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const formatFileSize = (bytes: number) => {
@@ -141,9 +174,17 @@ export function LoansPage() {
               </div>
               <Button
                 onClick={handleStartApplication}
+                disabled={isLoading}
                 className="w-full bg-blue-600 hover:bg-blue-700"
               >
-                Start Loan Application
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  'Start Loan Application'
+                )}
               </Button>
             </div>
           </CardContent>
@@ -155,50 +196,60 @@ export function LoansPage() {
             <CardTitle>Loan Progress</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-6">
-              {activeLoans.map((loan) => {
-                const progress = ((loan.amount - loan.balance) / loan.amount) * 100;
-                return (
-                  <div key={loan.id} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                    <div className="flex justify-between items-start mb-4">
-                      <div>
-                        <h3 className="text-gray-900">{loan.type}</h3>
-                        <p className="text-gray-500 text-sm mt-1">
-                          Original Amount: ${loan.amount.toLocaleString()}
-                        </p>
+            {isFetching ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+              </div>
+            ) : activeLoans.length === 0 ? (
+              <p className="text-gray-500 text-center py-8">
+                No active loans. Create a loan application to get started.
+              </p>
+            ) : (
+              <div className="space-y-6">
+                {activeLoans.map((loan) => {
+                  const progress = ((loan.amount - loan.balance) / loan.amount) * 100;
+                  return (
+                    <div key={loan.id} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                      <div className="flex justify-between items-start mb-4">
+                        <div>
+                          <h3 className="text-gray-900">{loan.type}</h3>
+                          <p className="text-gray-500 text-sm mt-1">
+                            Original Amount: ${loan.amount.toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-gray-900">
+                            ${loan.balance.toLocaleString()}
+                          </p>
+                          <p className="text-gray-500 text-sm mt-1">Remaining</p>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <p className="text-gray-900">
-                          ${loan.balance.toLocaleString()}
-                        </p>
-                        <p className="text-gray-500 text-sm mt-1">Remaining</p>
+                      <Progress value={progress} className="mb-4" />
+                      <div className="flex justify-between text-sm">
+                        <div>
+                          <p className="text-gray-500">Interest Rate</p>
+                          <p className="text-gray-900">{loan.interestRate}%</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-gray-500">Due Date</p>
+                          <p className="text-gray-900">
+                            {new Date(loan.dueDate).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                            })}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-gray-500">Progress</p>
+                          <p className="text-green-600">{progress.toFixed(1)}% paid</p>
+                        </div>
                       </div>
                     </div>
-                    <Progress value={progress} className="mb-4" />
-                    <div className="flex justify-between text-sm">
-                      <div>
-                        <p className="text-gray-500">Interest Rate</p>
-                        <p className="text-gray-900">{loan.interestRate}%</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-gray-500">Due Date</p>
-                        <p className="text-gray-900">
-                          {new Date(loan.dueDate).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                          })}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-gray-500">Progress</p>
-                        <p className="text-green-600">{progress.toFixed(1)}% paid</p>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -248,7 +299,7 @@ export function LoansPage() {
                           <p className="text-gray-900 text-sm">{file.name}</p>
                           <p className="text-gray-500 text-xs">
                             {formatFileSize(file.size)} • Uploaded{' '}
-                            {file.uploadDate.toLocaleDateString('en-US', {
+                            {new Date(file.uploadDate).toLocaleDateString('en-US', {
                               month: 'short',
                               day: 'numeric',
                             })}

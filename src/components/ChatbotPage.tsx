@@ -1,76 +1,130 @@
-import { useState } from 'react';
-import { Phone, Send } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Phone, Send, Loader2 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { ScrollArea } from './ui/scroll-area';
+import { chatAPI } from '../utils/api';
+import { SettingsDialog } from './SettingsDialog';
 
 interface Message {
   id: string;
   role: 'user' | 'bot';
   content: string;
-  timestamp: Date;
+  timestamp: string | Date;
 }
 
-const initialMessages: Message[] = [
-  {
-    id: '1',
-    role: 'bot',
-    content: 'Hello! I\'m your FinFlow assistant. How can I help you with your finances today?',
-    timestamp: new Date('2025-11-08T10:00:00'),
-  },
-  {
-    id: '2',
-    role: 'user',
-    content: 'What were my biggest expenses this month?',
-    timestamp: new Date('2025-11-08T10:01:00'),
-  },
-  {
-    id: '3',
-    role: 'bot',
-    content: 'Based on your transaction history, your biggest expenses this month were:\n\n1. Investments: $1,750.00\n2. Food: $219.57\n3. Entertainment: $53.98\n4. Online Purchases: $78.98\n\nYour investment purchases were your largest category of spending.',
-    timestamp: new Date('2025-11-08T10:01:30'),
-  },
-  {
-    id: '4',
-    role: 'user',
-    content: 'Can you help me create a budget?',
-    timestamp: new Date('2025-11-08T10:02:00'),
-  },
-  {
-    id: '5',
-    role: 'bot',
-    content: 'Of course! I\'d be happy to help you create a budget. Let\'s start with these questions:\n\n1. What\'s your monthly take-home income?\n2. What are your fixed expenses (rent, utilities, insurance)?\n3. What are your financial goals for the next 6-12 months?\n\nOnce I have this information, I can suggest a personalized budget plan.',
-    timestamp: new Date('2025-11-08T10:02:30'),
-  },
-];
-
 export function ChatbotPage() {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isFetching, setIsFetching] = useState(true);
+  const [currentModel, setCurrentModel] = useState('Llama 3.1 8B (Free)');
 
-  const handleSendMessage = () => {
-    if (!inputValue.trim()) return;
+  // Load chat history on mount and listen for settings changes
+  useEffect(() => {
+    loadChatHistory();
+    updateModelDisplay();
 
+    // Listen for storage changes to update model display
+    const handleStorageChange = () => {
+      updateModelDisplay();
+    };
+    window.addEventListener('storage', handleStorageChange);
+    // Also listen for custom event when settings dialog closes
+    window.addEventListener('settingsUpdated', handleStorageChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('settingsUpdated', handleStorageChange);
+    };
+  }, []);
+
+  const updateModelDisplay = () => {
+    const model = localStorage.getItem('openrouter_model') || 'meta-llama/llama-3.1-8b-instruct:free';
+    const modelNames: Record<string, string> = {
+      'meta-llama/llama-3.1-8b-instruct:free': 'Llama 3.1 8B (Free)',
+      'google/gemini-flash-1.5:free': 'Gemini Flash 1.5 (Free)',
+      'google/gemini-flash-1.5': 'Gemini Flash 1.5',
+      'google/gemini-pro-1.5': 'Gemini Pro 1.5',
+      'openai/gpt-4o-mini': 'GPT-4o Mini',
+      'openai/gpt-4o': 'GPT-4o',
+      'anthropic/claude-3.5-sonnet': 'Claude 3.5 Sonnet',
+      'meta-llama/llama-3.1-70b-instruct': 'Llama 3.1 70B',
+    };
+    setCurrentModel(modelNames[model] || 'Llama 3.1 8B (Free)');
+  };
+
+  const loadChatHistory = async () => {
+    try {
+      const response = await chatAPI.getHistory();
+      if (response.messages && response.messages.length > 0) {
+        setMessages(response.messages);
+      } else {
+        // Set initial welcome message if no history
+        setMessages([
+          {
+            id: '1',
+            role: 'bot',
+            content: 'Hello! I\'m your FinFlow AI assistant. How can I help you with your finances today?',
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      }
+    } catch (error) {
+      console.error('Failed to load chat history:', error);
+      // Set initial welcome message on error
+      setMessages([
+        {
+          id: '1',
+          role: 'bot',
+          content: 'Hello! I\'m your FinFlow AI assistant. How can I help you with your finances today?',
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setIsFetching(false);
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!inputValue.trim() || isLoading) return;
+
+    const userMessage = inputValue;
+    setInputValue('');
+    setIsLoading(true);
+
+    // Add user message to UI immediately
     const newUserMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: inputValue,
-      timestamp: new Date(),
+      content: userMessage,
+      timestamp: new Date().toISOString(),
     };
+    setMessages((prev) => [...prev, newUserMessage]);
 
-    setMessages([...messages, newUserMessage]);
-    setInputValue('');
+    try {
+      // Get API key from localStorage if available
+      const apiKey = localStorage.getItem('openrouter_api_key') || undefined;
+      const model = localStorage.getItem('openrouter_model') || undefined;
 
-    // Simulate bot response
-    setTimeout(() => {
-      const botResponse: Message = {
+      // Call backend to get AI response
+      const response = await chatAPI.sendMessage(userMessage, apiKey, model);
+      
+      // Add bot response
+      setMessages((prev) => [...prev, response.message]);
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      // Add error message
+      const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'bot',
-        content: 'Thank you for your message. I\'m here to help you with your financial questions and provide insights about your spending, savings, and investments.',
-        timestamp: new Date(),
+        content: 'Sorry, I encountered an error. Please check your API key in Settings or try again later.',
+        timestamp: new Date().toISOString(),
       };
-      setMessages((prev) => [...prev, botResponse]);
-    }, 1000);
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -84,7 +138,16 @@ export function ChatbotPage() {
     <div className="flex h-screen bg-white">
       {/* Optional Left Sidebar for Chat History */}
       <aside className="w-64 bg-gray-50 border-r border-gray-200 p-4 hidden md:block">
-        <h2 className="text-gray-900 mb-4">Chat History</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-gray-900">Chat History</h2>
+        </div>
+        <div className="mb-4">
+          <SettingsDialog />
+        </div>
+        <div className="mb-4 p-3 bg-white rounded-lg border border-gray-200">
+          <p className="text-xs text-gray-500 mb-1">Current Model:</p>
+          <p className="text-sm text-gray-900">{currentModel}</p>
+        </div>
         <div className="space-y-2">
           <div className="p-3 bg-white rounded-lg border border-gray-200 cursor-pointer hover:bg-gray-50 transition-colors">
             <p className="text-gray-900 text-sm">Budget Planning</p>
@@ -106,32 +169,53 @@ export function ChatbotPage() {
         {/* Chat Messages */}
         <ScrollArea className="flex-1 p-6">
           <div className="max-w-3xl mx-auto space-y-4">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
-                <div
-                  className={`max-w-[70%] rounded-2xl px-4 py-3 ${
-                    message.role === 'user'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-900'
-                  }`}
-                >
-                  <p className="whitespace-pre-wrap">{message.content}</p>
-                  <p
-                    className={`text-xs mt-2 ${
-                      message.role === 'user' ? 'text-blue-100' : 'text-gray-500'
-                    }`}
-                  >
-                    {message.timestamp.toLocaleTimeString('en-US', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </p>
-                </div>
+            {isFetching ? (
+              <div className="flex justify-center items-center h-full">
+                <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
               </div>
-            ))}
+            ) : (
+              <>
+                {messages.map((message) => {
+                  const timestamp = typeof message.timestamp === 'string' 
+                    ? new Date(message.timestamp) 
+                    : message.timestamp;
+                  
+                  return (
+                    <div
+                      key={message.id}
+                      className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <div
+                        className={`max-w-[70%] rounded-2xl px-4 py-3 ${
+                          message.role === 'user'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-100 text-gray-900'
+                        }`}
+                      >
+                        <p className="whitespace-pre-wrap">{message.content}</p>
+                        <p
+                          className={`text-xs mt-2 ${
+                            message.role === 'user' ? 'text-blue-100' : 'text-gray-500'
+                          }`}
+                        >
+                          {timestamp.toLocaleTimeString('en-US', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+                {isLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-gray-100 rounded-2xl px-4 py-3">
+                      <Loader2 className="w-5 h-5 text-gray-600 animate-spin" />
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </ScrollArea>
 
@@ -160,9 +244,10 @@ export function ChatbotPage() {
               <Button
                 onClick={handleSendMessage}
                 size="icon"
+                disabled={isLoading}
                 className="rounded-full h-9 w-9 flex-shrink-0 bg-blue-600 hover:bg-blue-700"
               >
-                <Send className="w-4 h-4" />
+                {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </Button>
             </div>
           </div>
